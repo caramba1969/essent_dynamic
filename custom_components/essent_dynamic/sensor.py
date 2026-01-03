@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import HomeAssistant
@@ -51,7 +51,42 @@ def _start_of_hour(local_now: datetime) -> datetime:
     return local_now.replace(minute=0, second=0, microsecond=0)
 
 
-def _find_tariff_for_moment(data: EssentDayData, moment: datetime) -> ParsedTariff | None:
+def _find_next_tariff(data: EssentDayData, now: datetime) -> ParsedTariff | None:
+    # Robust approach:
+    # - Use tariff start timestamps (sorted) instead of assuming fixed hourly blocks
+    # - Pick the first tariff that starts after "now" so gaps/misalignment won't break
+    # - Normalize naive/aware datetime comparisons to avoid TypeError
+    if not data.tariffs:
+        return None
+
+    tariffs = sorted(data.tariffs, key=lambda t: t.start)
+
+    reference_tzinfo = tariffs[0].start.tzinfo
+    if reference_tzinfo is None:
+        now_cmp = now.replace(tzinfo=None)
+    else:
+        now_cmp = (
+            now if now.tzinfo is not None else now.replace(tzinfo=reference_tzinfo)
+        )
+
+    for tariff in tariffs:
+        if tariff.start > now_cmp:
+            return tariff
+
+    # If the API provided next-day tariffs in the same payload, pick the first of the next day.
+    today = now_cmp.date()
+    for tariff in tariffs:
+        if tariff.start.date() > today:
+            return tariff
+
+    # Final fallback: if the API payload contains only past entries, return the last known tariff
+    # so the sensor won't become Unavailable while tariffs are still being delivered.
+    return tariffs[-1]
+
+
+def _find_tariff_for_moment(
+    data: EssentDayData, moment: datetime
+) -> ParsedTariff | None:
     for t in data.tariffs:
         if t.start <= moment < t.end:
             return t
@@ -127,10 +162,13 @@ class EssentNextHourPriceSensor(_EssentBaseSensor):
         if data is None:
             return None
 
-        now = dt_util.as_local(dt_util.now())
-        next_hour = _start_of_hour(now) + timedelta(hours=1)
-        tariff = _find_tariff_for_moment(data, next_hour)
-        return tariff.total if tariff else None
+        # Use ISO parsing to stay aligned with the API's timezone-naive timestamps.
+        now = datetime.fromisoformat(datetime.now().replace(microsecond=0).isoformat())
+        if tariff := _find_next_tariff(data, now):
+            return tariff.total
+
+        # Only return None when we truly have no usable tariff (prevents Unavailable when data exists).
+        return None
 
 
 class EssentMinPriceTodaySensor(_EssentBaseSensor):
