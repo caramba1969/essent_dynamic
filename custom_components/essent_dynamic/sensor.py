@@ -1,4 +1,4 @@
-"""Sensors for Essent Dynamic prices."""
+"""asdasdasSensors for Essent Dynamic prices. Remco`"""
 
 from __future__ import annotations
 
