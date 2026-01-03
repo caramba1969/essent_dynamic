@@ -1,4 +1,4 @@
-"""asdasdasSensors for Essent Dynamic prices. Remco`"""
+"""Sensors for Essent Dynamic prices."""
 
 from __future__ import annotations
 
@@ -51,6 +51,17 @@ def _start_of_hour(local_now: datetime) -> datetime:
     return local_now.replace(minute=0, second=0, microsecond=0)
 
 
+def _local_now_naive() -> datetime:
+    """Return current local time as a timezone-naive datetime.
+
+    The Essent API provides ISO timestamps without timezone info, and the coordinator
+    parses them using `datetime.fromisoformat`, producing naive datetimes.
+    To compare correctly, we also drop tzinfo here.
+    """
+
+    return dt_util.as_local(dt_util.now()).replace(tzinfo=None)
+
+
 def _find_next_tariff(data: EssentDayData, now: datetime) -> ParsedTariff | None:
     # Robust approach:
     # - Use tariff start timestamps (sorted) instead of assuming fixed hourly blocks
@@ -87,6 +98,11 @@ def _find_next_tariff(data: EssentDayData, now: datetime) -> ParsedTariff | None
 def _find_tariff_for_moment(
     data: EssentDayData, moment: datetime
 ) -> ParsedTariff | None:
+    # Coordinator parses tariffs as timezone-naive; normalize moment to avoid
+    # TypeError when a timezone-aware datetime slips in.
+    if moment.tzinfo is not None:
+        moment = moment.replace(tzinfo=None)
+
     for t in data.tariffs:
         if t.start <= moment < t.end:
             return t
@@ -119,7 +135,7 @@ class EssentNowPriceSensor(_EssentBaseSensor):
         if data is None:
             return None
 
-        now = dt_util.as_local(dt_util.now())
+        now = _local_now_naive()
         tariff = _find_tariff_for_moment(data, now)
         return tariff.total if tariff else None
 
@@ -162,8 +178,8 @@ class EssentNextHourPriceSensor(_EssentBaseSensor):
         if data is None:
             return None
 
-        # Use ISO parsing to stay aligned with the API's timezone-naive timestamps.
-        now = datetime.fromisoformat(datetime.now().replace(microsecond=0).isoformat())
+        # Use local naive time to stay aligned with the API's timezone-naive timestamps.
+        now = _local_now_naive()
         if tariff := _find_next_tariff(data, now):
             return tariff.total
 
